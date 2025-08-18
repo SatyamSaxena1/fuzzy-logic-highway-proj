@@ -1,0 +1,5 @@
+numpy
+# scikit-fuzzy is optional: only required for the richer CLI (`speed_limit_cli.py`) and plotting helpers
+# Install it only when you want the skfuzzy-based CLI: `pip install scikit-fuzzy`
+scikit-fuzzy  # optional
+pytest

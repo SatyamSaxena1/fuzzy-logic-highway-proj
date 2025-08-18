@@ -1,0 +1,37 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.spec
+
+# PyInstaller
+*.exe
+*.manifest
+*.log
+
+# Jupyter
+*.ipynb_checkpoints
+
+# VSCode
+.vscode/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual envs
+venv/
+.env
+
+# plots and generated files
+*.png
+speed_plot*.png
+
+# OS
+.DS_Store
+Thumbs.db
