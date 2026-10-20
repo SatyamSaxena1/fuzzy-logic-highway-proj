@@ -13,8 +13,7 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 
-from speed_limit_pure import build_speed_mfs
-from paper_rules import human_readable_rules
+from speed_limit_pure import build_speed_mfs, compute, human_readable_rules, RULES, RULES_REWRITE
 
 import logging
 
@@ -24,80 +23,9 @@ logger = logging.getLogger('speed_limit_gui')
 logger.info('Starting speed_limit_gui (lightweight)')
 
 
-def compute_aggregation_and_centroid(mfs, rc_val, td_val, gap_val):
-    ui = mfs['uni_in']
-    uo = mfs['uni_out']
-
-    # membership degrees for inputs
-    def interp(x, mf, val):
-        return float(np.interp(val, x, mf))
-
-    rc = np.array([interp(ui, mfs['poor'], rc_val), interp(ui, mfs['average'], rc_val), interp(ui, mfs['good'], rc_val)])
-    td = np.array([interp(ui, mfs['poor'], td_val), interp(ui, mfs['average'], td_val), interp(ui, mfs['good'], td_val)])
-    gap = np.array([interp(ui, mfs['poor'], gap_val), interp(ui, mfs['average'], gap_val), interp(ui, mfs['good'], gap_val)])
-
-    labels = ['poor', 'average', 'good']
-
-    # explicit mapping consistent with pure fallback
-    mapping = {}
-    for r in labels:
-        for t in labels:
-            for g in labels:
-                if r == 'good' and g == 'good':
-                    out = 'high'
-                elif r == 'poor' and g == 'poor':
-                    out = 'low'
-                elif r == 'good' and g == 'average':
-                    out = 'high'
-                elif r == 'average' and g == 'good':
-                    out = 'high'
-                elif r == 'poor' and g == 'average':
-                    out = 'low'
-                else:
-                    out = 'medium'
-                mapping[(r, t, g)] = out
-
-    # collect per-rule activations and clipped MFs
-    rules = []
-    for i, rlab in enumerate(labels):
-        for j, tlab in enumerate(labels):
-            for k, glab in enumerate(labels):
-                r_val = rc[i]
-                t_val = td[j]
-                g_val = gap[k]
-                activation = float(min(r_val, t_val, g_val))
-                out_label = mapping[(rlab, tlab, glab)]
-                # clipped mf for this rule
-                if out_label == 'low':
-                    clipped = np.fmin(activation, mfs['low'])
-                elif out_label == 'medium':
-                    clipped = np.fmin(activation, mfs['medium'])
-                else:
-                    clipped = np.fmin(activation, mfs['high'])
-                rules.append(((rlab, tlab, glab, out_label), activation, clipped))
-
-    # aggregate final mf
-    agg = np.zeros_like(mfs['uni_out'], dtype=float)
-    low_clips = []
-    med_clips = []
-    high_clips = []
-    for (desc, act, clip) in rules:
-        agg = np.fmax(agg, clip)
-        if desc[3] == 'low':
-            low_clips.append((desc, act, clip))
-        elif desc[3] == 'medium':
-            med_clips.append((desc, act, clip))
-        else:
-            high_clips.append((desc, act, clip))
-
-    if agg.sum() == 0:
-        centroid = 0.0
-    else:
-        centroid = float((agg * uo).sum() / agg.sum())
-
-    # return centroid, aggregated mf, and per-rule list sorted by activation desc
-    rules_sorted = sorted(rules, key=lambda r: r[1], reverse=True)
-    return centroid, agg, rules_sorted
+def compute_aggregation_and_centroid(mfs, rc_val, td_val, gap_val, rules_set=RULES):
+    """(speed or None, output x, aggregated MF, rules sorted by activation), from speed_limit_pure."""
+    return compute(mfs, rc_val, td_val, gap_val, rules_set)
 
 
 class SpeedLimitGUI(tk.Tk):
@@ -148,7 +76,12 @@ class SpeedLimitGUI(tk.Tk):
         self.config(menu=menubar)
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label='View', menu=view_menu)
-        view_menu.add_command(label='Show inferred 36 rules', command=self.show_rules)
+        view_menu.add_command(label='Show the active rules', command=self.show_rules)
+        self.rule_choice = tk.StringVar(value='notebook')
+        rules_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label='Rule base', menu=rules_menu)
+        rules_menu.add_radiobutton(label='2023 notebook (7 rules)', value='notebook', variable=self.rule_choice, command=self.update_plot)
+        rules_menu.add_radiobutton(label='2026 rewrite (27 rules)', value='rewrite', variable=self.rule_choice, command=self.update_plot)
 
         # Matplotlib figure in center
         self.fig, self.axes = plt.subplots(3, 1, figsize=(7, 8))
@@ -182,7 +115,7 @@ class SpeedLimitGUI(tk.Tk):
         td = float(self.td_var.get())
         gap = float(self.gap_var.get())
 
-        centroid, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap)
+        centroid, x, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap, self.active_rules())
 
         # clear axes
         for ax in self.axes:
@@ -203,9 +136,9 @@ class SpeedLimitGUI(tk.Tk):
         self.axes[1].plot(uo, self.mfs['low'], 'r', label='low')
         self.axes[1].plot(uo, self.mfs['medium'], 'g', label='medium')
         self.axes[1].plot(uo, self.mfs['high'], 'b', label='high')
-        self.axes[1].set_title('Output MFs (speed 0-120)')
+        self.axes[1].set_title('Output MFs (speed 0-100)')
         self.axes[1].legend()
-        self.axes[1].set_xlim(0, 120)
+        self.axes[1].set_xlim(0, 100)
 
         # Defuzzified result: show aggregated clipped area and centroid
         self.axes[2].plot(uo, self.mfs['low'], color='r', alpha=0.2)
@@ -215,12 +148,23 @@ class SpeedLimitGUI(tk.Tk):
         top_rules = rules_sorted[:6]
         colors = ['#8B0000', '#FF8C00', '#228B22', '#4169E1', '#800080', '#2F4F4F']
         for idx, (desc, act, clip) in enumerate(top_rules):
-            self.axes[2].fill_between(uo, 0, clip, color=colors[idx % len(colors)], alpha=0.35, label=f'{desc[0]}/{desc[1]}/{desc[2]}->{desc[3]} ({act:.2f})')
-        self.axes[2].plot(uo, agg, color='purple', linewidth=2, label='aggregated')
-        self.axes[2].axvline(centroid, color='k', linestyle='--', label=f'defuzzified {centroid:.2f}')
-        self.axes[2].set_title(f'Defuzzified result: {centroid:.2f} km/h')
-        self.axes[2].set_xlim(0, 120)
+            if act > 0:
+                self.axes[2].fill_between(x, 0, clip, color=colors[idx % len(colors)], alpha=0.35, label=f'{desc} ({act:.2f})')
+        self.axes[2].plot(x, agg, color='purple', linewidth=2, label='aggregated')
+        if centroid is None:
+            self.axes[2].set_title('No rule fires for these inputs')
+        else:
+            self.axes[2].axvline(centroid, color='k', linestyle='--', label=f'defuzzified {centroid:.2f}')
+            self.axes[2].set_title(f'Defuzzified result: {centroid:.2f} km/h')
+        self.axes[2].set_xlim(0, 100)
         self.axes[2].legend(loc='upper left', fontsize='small')
+
+        # push the new result to the window (previously the canvas and labels were never refreshed)
+        self.last_centroid = centroid
+        self.result_label.config(text='Recommended: -- km/h' if centroid is None else f'Recommended: {centroid:.1f} km/h')
+        self._update_rules_panel(rules_sorted)
+        self._update_description(rc, td, gap, centroid, rules_sorted)
+        self.canvas.draw_idle()
 
     
 
@@ -249,7 +193,7 @@ class SpeedLimitGUI(tk.Tk):
         rc = float(self.rc_var.get())
         td = float(self.td_var.get())
         gap = float(self.gap_var.get())
-        centroid, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap)
+        centroid, x, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap, self.active_rules())
         base = f'examples/speed_rc{int(rc)}_td{int(td)}_gap{int(gap)}'
         png = base + '.png'
         meta = base + '.json'
@@ -258,10 +202,13 @@ class SpeedLimitGUI(tk.Tk):
             json.dump({'rc': rc, 'td': td, 'gap': gap, 'centroid': centroid}, f)
         messagebox.showinfo('Saved', f'Example saved: {png} and {meta}')
 
+    def active_rules(self):
+        return RULES_REWRITE if getattr(self, 'rule_choice', None) and self.rule_choice.get() == 'rewrite' else RULES
+
     def show_rules(self):
-        rules = human_readable_rules()
+        rules = human_readable_rules(self.active_rules())
         win = tk.Toplevel(self)
-        win.title('Inferred paper rules (36)')
+        win.title(f'Rule base ({len(self.active_rules())} rules)')
         txt = tk.Text(win, wrap='word', width=80, height=30)
         txt.pack(fill=tk.BOTH, expand=1)
         txt.insert('1.0', '\n'.join(rules))
@@ -290,7 +237,7 @@ class SpeedLimitGUI(tk.Tk):
         self._rule_widgets = []
         # show top 12 rules
         for idx, (desc, act, clip) in enumerate(rules_sorted[:12]):
-            text = f'{desc[0]}/{desc[1]}/{desc[2]} -> {desc[3]} ({act:.2f})'
+            text = f'{desc} ({act:.2f})'
             lbl = ttk.Label(self.rules_frame, text=text)
             lbl.pack(anchor='w')
             pb = ttk.Progressbar(self.rules_frame, orient='horizontal', length=280, mode='determinate')
@@ -304,8 +251,10 @@ class SpeedLimitGUI(tk.Tk):
         rc_label = 'Good' if rc >= 7 else ('Poor' if rc <= 3 else 'Average')
         td_label = 'High' if td >= 7 else ('Low' if td <= 3 else 'Medium')
         gap_label = 'Present' if gap >= 7 else ('Absent' if gap <= 3 else 'Some')
-        top = rules_sorted[0][0]
-        reason = f"Top rule: {top[0]}/{top[1]}/{top[2]} -> {top[3]}"
+        if centroid is None:
+            self.desc_var.set(f'Road: {rc_label}. Traffic: {td_label}. Gap: {gap_label}. No rule fires.')
+            return
+        reason = f'Top rule: {rules_sorted[0][0]}'
         desc = f'Road: {rc_label}. Traffic: {td_label}. Gap: {gap_label}. {reason}. Recommended {centroid:.1f} km/h.'
         self.desc_var.set(desc)
 
