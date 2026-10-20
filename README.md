@@ -22,10 +22,20 @@ go through seven Mamdani rules to a recommended speed limit on 0-100.
 pip install -r requirements.txt
 python .\speed_limit_pure.py     # console version
 python .\speed_limit_gui.py      # GUI
-pytest -q                        # parity tests
+pytest -q                        # parity and coverage tests
 ```
 
-## Known behaviour (kept on purpose, it matches the notebook)
+## Two rule bases
+
+- **Notebook (default):** the seven 2023 rules, reproduced exactly.
+- **Rewrite (`RULES_REWRITE`):** one AND rule for each of the 27 input combinations, so
+  every input fires something, with no OR rule to let one input override the rest. Each
+  input counts 0-2 (light traffic counts as 2); score = road + gap + (2 - traffic) gives
+  0-2 low, 3-4 medium, 5-6 high, and a poor road stays low unless traffic is light and the
+  gap large. Use it with `apply_rules(mfs, road, traffic, gap, RULES_REWRITE)`,
+  `python speed_limit_pure.py --rewrite`, or the GUI's *Rule base* menu.
+
+## Known behaviour of the notebook rules (kept on purpose)
 
 - Rule 1 joins its conditions with OR, so dense traffic alone forces a low limit
   (perfect road, dense traffic and a big gap gives 16.7).

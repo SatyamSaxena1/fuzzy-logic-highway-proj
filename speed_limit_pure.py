@@ -32,6 +32,32 @@ RULES = [
 ]
 
 
+def _rewrite_rules():
+    """A 2026 rewrite: one AND rule for each of the 27 combinations, so every input fires.
+
+    Each input counts 0/1/2 (traffic counts in reverse, since light traffic helps).
+    Score = road + gap + (2 - traffic): 0-2 low, 3-4 medium, 5-6 high. A poor road
+    stays low unless traffic is light and the gap is large (then medium).
+    """
+    rules = []
+    for ri, r in enumerate(LABELS):
+        for ti, t in enumerate(LABELS):
+            for gi, g in enumerate(LABELS):
+                s = ri + gi + (2 - ti)
+                out = 'low' if s <= 2 else 'medium' if s <= 4 else 'high'
+                if ri == 0:
+                    out = 'medium' if (ti == 0 and gi == 2) else 'low'
+                rules.append(('and', (r, t, g), out))
+    return rules
+
+
+RULES_REWRITE = _rewrite_rules()
+
+# the rewrite reads the same terms with names that match their meaning
+REWRITE_NAMES = ({}, {'poor': 'light', 'average': 'moderate', 'good': 'heavy'},
+                 {'poor': 'small', 'average': 'medium', 'good': 'large'})
+
+
 def trimf(x, abc):
     """Triangular membership function, same as skfuzzy.trimf."""
     a, b, c = abc
@@ -92,8 +118,8 @@ def _crossings(x, mf, cut):
     return x[i] + (x[i + 1] - x[i]) * d[i] / (d[i] - d[i + 1])
 
 
-def compute(mfs, rc_val, td_val, gap_val):
-    """Run the rule base.
+def compute(mfs, rc_val, td_val, gap_val, rules_set=RULES):
+    """Run a rule base (the notebook's RULES by default, or RULES_REWRITE).
 
     Returns (speed or None, x, aggregated_mf, rules), where rules is a list of
     (description, activation, clipped_mf_on_x) sorted by activation.
@@ -103,7 +129,7 @@ def compute(mfs, rc_val, td_val, gap_val):
 
     cut = {'low': 0.0, 'medium': 0.0, 'high': 0.0}
     activations = []
-    for op, terms, out in RULES:
+    for op, terms, out in rules_set:
         vals = [fuzz[i][t] for i, t in enumerate(terms)]
         act = max(vals) if op == 'or' else min(vals)
         activations.append(act)
@@ -114,11 +140,10 @@ def compute(mfs, rc_val, td_val, gap_val):
     x = np.unique(np.concatenate([uo] + [_crossings(uo, mfs[k], c) for k, c in cut.items() if 0 < c < 1]))
 
     rules, agg = [], np.zeros(len(x))
-    for (op, terms, out), act in zip(RULES, activations):
+    for (op, terms, out), act in zip(rules_set, activations):
         clipped = np.fmin(act, np.interp(x, uo, mfs[out]))
         agg = np.fmax(agg, clipped)
-        joiner = ' OR ' if op == 'or' else ' AND '
-        desc = 'road ' + terms[0] + joiner + 'traffic ' + terms[1] + joiner + 'gap ' + terms[2] + ' -> ' + out
+        desc = _describe(op, terms, out, rules_set)
         rules.append((desc, act, clipped))
     rules.sort(key=lambda r: r[1], reverse=True)
 
@@ -126,23 +151,29 @@ def compute(mfs, rc_val, td_val, gap_val):
     return speed, x, agg, rules
 
 
-def apply_rules(mfs, rc_val, td_val, gap_val):
+def _describe(op, terms, out, rules_set):
+    names = REWRITE_NAMES if rules_set is RULES_REWRITE else ({}, {}, {})
+    t = [names[i].get(term, term) for i, term in enumerate(terms)]
+    j = ' OR ' if op == 'or' else ' AND '
+    return f'road {t[0]}{j}traffic {t[1]}{j}gap {t[2]} -> {out}'
+
+
+def apply_rules(mfs, rc_val, td_val, gap_val, rules_set=RULES):
     """Recommended speed limit, or None when no rule fires."""
-    return compute(mfs, rc_val, td_val, gap_val)[0]
+    return compute(mfs, rc_val, td_val, gap_val, rules_set)[0]
 
 
-def human_readable_rules():
-    """The seven notebook rules as sentences (for documentation/UI)."""
-    out = []
-    for i, (op, terms, result) in enumerate(RULES, start=1):
-        j = ' OR ' if op == 'or' else ' AND '
-        out.append(f'{i}. IF road is {terms[0]}{j}traffic is {terms[1]}{j}gap is {terms[2]} THEN speed is {result}')
-    return out
+def human_readable_rules(rules_set=RULES):
+    """A rule base as numbered sentences (for documentation/UI)."""
+    return [f'{i}. IF ' + _describe(op, terms, out, rules_set).replace(' -> ', ' THEN speed is ')
+            for i, (op, terms, out) in enumerate(rules_set, start=1)]
 
 
 def main():
+    import sys
     mfs = build_speed_mfs()
-    print('Fuzzy speed limit (notebook rules, no scikit-fuzzy). Ctrl+C to quit.')
+    rules_set = RULES_REWRITE if '--rewrite' in sys.argv else RULES
+    print('Fuzzy speed limit (' + ('27-rule rewrite' if rules_set is RULES_REWRITE else 'notebook rules') + ', no scikit-fuzzy). Ctrl+C to quit.')
     while True:
         try:
             rc = float(input('Enter road conditions (0-10): '))
@@ -151,7 +182,7 @@ def main():
             if not (0 <= rc <= 10 and 0 <= td <= 10 and 0 <= gap <= 10):
                 print('Inputs must be between 0 and 10')
                 continue
-            out = apply_rules(mfs, rc, td, gap)
+            out = apply_rules(mfs, rc, td, gap, rules_set)
             print('No rule fires for these inputs.' if out is None else f'Recommended speed limit: {out:.2f}')
         except ValueError:
             print('Please enter a number.')

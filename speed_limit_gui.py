@@ -13,7 +13,7 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 
-from speed_limit_pure import build_speed_mfs, compute, human_readable_rules
+from speed_limit_pure import build_speed_mfs, compute, human_readable_rules, RULES, RULES_REWRITE
 
 import logging
 
@@ -23,9 +23,9 @@ logger = logging.getLogger('speed_limit_gui')
 logger.info('Starting speed_limit_gui (lightweight)')
 
 
-def compute_aggregation_and_centroid(mfs, rc_val, td_val, gap_val):
+def compute_aggregation_and_centroid(mfs, rc_val, td_val, gap_val, rules_set=RULES):
     """(speed or None, output x, aggregated MF, rules sorted by activation), from speed_limit_pure."""
-    return compute(mfs, rc_val, td_val, gap_val)
+    return compute(mfs, rc_val, td_val, gap_val, rules_set)
 
 
 class SpeedLimitGUI(tk.Tk):
@@ -76,7 +76,12 @@ class SpeedLimitGUI(tk.Tk):
         self.config(menu=menubar)
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label='View', menu=view_menu)
-        view_menu.add_command(label='Show the 7 notebook rules', command=self.show_rules)
+        view_menu.add_command(label='Show the active rules', command=self.show_rules)
+        self.rule_choice = tk.StringVar(value='notebook')
+        rules_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label='Rule base', menu=rules_menu)
+        rules_menu.add_radiobutton(label='2023 notebook (7 rules)', value='notebook', variable=self.rule_choice, command=self.update_plot)
+        rules_menu.add_radiobutton(label='2026 rewrite (27 rules)', value='rewrite', variable=self.rule_choice, command=self.update_plot)
 
         # Matplotlib figure in center
         self.fig, self.axes = plt.subplots(3, 1, figsize=(7, 8))
@@ -110,7 +115,7 @@ class SpeedLimitGUI(tk.Tk):
         td = float(self.td_var.get())
         gap = float(self.gap_var.get())
 
-        centroid, x, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap)
+        centroid, x, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap, self.active_rules())
 
         # clear axes
         for ax in self.axes:
@@ -188,7 +193,7 @@ class SpeedLimitGUI(tk.Tk):
         rc = float(self.rc_var.get())
         td = float(self.td_var.get())
         gap = float(self.gap_var.get())
-        centroid, x, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap)
+        centroid, x, agg, rules_sorted = compute_aggregation_and_centroid(self.mfs, rc, td, gap, self.active_rules())
         base = f'examples/speed_rc{int(rc)}_td{int(td)}_gap{int(gap)}'
         png = base + '.png'
         meta = base + '.json'
@@ -197,10 +202,13 @@ class SpeedLimitGUI(tk.Tk):
             json.dump({'rc': rc, 'td': td, 'gap': gap, 'centroid': centroid}, f)
         messagebox.showinfo('Saved', f'Example saved: {png} and {meta}')
 
+    def active_rules(self):
+        return RULES_REWRITE if getattr(self, 'rule_choice', None) and self.rule_choice.get() == 'rewrite' else RULES
+
     def show_rules(self):
-        rules = human_readable_rules()
+        rules = human_readable_rules(self.active_rules())
         win = tk.Toplevel(self)
-        win.title('Notebook rules (7)')
+        win.title(f'Rule base ({len(self.active_rules())} rules)')
         txt = tk.Text(win, wrap='word', width=80, height=30)
         txt.pack(fill=tk.BOTH, expand=1)
         txt.insert('1.0', '\n'.join(rules))
