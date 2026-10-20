@@ -1,56 +1,44 @@
 # Fuzzy Logic Highway Project
 
-This repository contains a simple fuzzy-logic speed-limit demonstrator.
+A fuzzy-logic speed-limit advisor from my MSc Fuzzy Logic coursework (Jul 2023).
+Three inputs on a 0-10 scale (road conditions, traffic density, gap in traffic)
+go through seven Mamdani rules to a recommended speed limit on 0-100.
 
-Files of interest
-- `fuzzy_logic.py` - utility functions for fuzzy set operations.
-- `Fuzzy_logic_speed_limit_v2.ipynb` - original notebook using `scikit-fuzzy`.
-- `speed_limit_cli.py` - CLI using `scikit-fuzzy` control module (needs scikit-fuzzy).
-- `speed_limit_pure.py` - pure-Python fallback implementation (no external fuzzy lib required).
-- `speed_limit_gui.py` - lightweight Tkinter GUI that embeds matplotlib and uses the pure-Python controller.
+**Try it in the browser:** https://blinkedit.me/fuzzy/
 
-Quick start
+## Files
 
-1) Run the pure-Python demo (no extra installs):
+- `Fuzzy_logic_speed_limit_v2.ipynb` - the original notebook, built with `scikit-fuzzy`.
+- `speed_limit_pure.py` - the same system in NumPy only (no scikit-fuzzy). Matches
+  `skfuzzy.control` to floating-point precision, including defuzzification.
+- `speed_limit_gui.py` - a Tkinter + matplotlib GUI on top of `speed_limit_pure.py`.
+- `test_speed_limit_pure.py` - checks `speed_limit_pure.py` against reference outputs
+  produced by scikit-fuzzy 0.5 running the notebook.
+- `Fuzzy logic.docx` - the group report this work came from.
 
-```powershell
-python .\speed_limit_pure.py
-```
-
-2) To run the GUI (recommended lightweight release artifact):
-
-The Tkinter GUI is a single Python script (`speed_limit_gui.py`) that uses the pure-Python controller and matplotlib to plot MFs and results.
-
-Install the runtime dependencies and run:
+## Quick start
 
 ```powershell
-pip install numpy matplotlib
-python .\speed_limit_gui.py
+pip install -r requirements.txt
+python .\speed_limit_pure.py     # console version
+python .\speed_limit_gui.py      # GUI
+pytest -q                        # parity tests
 ```
 
-Optional: install `scikit-fuzzy` only if you want to run the richer CLI (`speed_limit_cli.py`) or reproduce the original notebook.
+## Known behaviour (kept on purpose, it matches the notebook)
 
-Note: the project uses an output speed range of 0-120 km/h to match the project report.
+- Rule 1 joins its conditions with OR, so dense traffic alone forces a low limit
+  (perfect road, dense traffic and a big gap gives 16.7).
+- Seven rules do not cover every combination. Some inputs fire no rule at all,
+  for example road 10, traffic 0, gap 5. scikit-fuzzy raises `KeyError: 'speed_limit'`
+  there; `speed_limit_pure.apply_rules` returns `None`.
+- `automf(3)` names every input's terms poor / average / good by value, so for
+  traffic density "good" means heavy traffic.
 
-Tests
+## Credits
 
-A small unit test is included to exercise the pure-Python runner. Run with:
-
-```powershell
-pip install pytest
-pytest -q
-```
-
-Releases / distribution
-
-For releases we recommend attaching the single script `speed_limit_gui.py` and the `README.md`. This keeps the release lightweight and avoids bundling large native dependencies. If you need a bundled executable, keep the old `build/` and `dist/` artifacts out of source control and generate them in CI or locally using a build script outside the repo.
-
-Maintaining GitHub docs
-
-- Edit this `README.md` for repository-level docs.
-- Add more `.md` files under a `docs/` folder for longer documentation.
-- Keep the notebook in the repo for interactive exploration; convert it to a script for CI-friendly runs.
-
-Contact
-
-Open an issue or push a PR to iterate on features.
+The notebook uses [scikit-fuzzy](https://github.com/scikit-fuzzy/scikit-fuzzy)
+(BSD 3-Clause, Copyright (c) 2012, the scikit-fuzzy team). The defuzzification in
+`speed_limit_pure.py` reimplements scikit-fuzzy's method so results match. Earlier
+commits of this repository included `fuzzy_logic.py`, a copy of scikit-fuzzy's fuzzy
+set operations; it has been removed as unused.

@@ -1,148 +1,163 @@
-"""A pure-Python fuzzy speed limit tester that doesn't require scikit-fuzzy.
+"""A pure-Python (NumPy only) version of the speed-limit system in
+`Fuzzy_logic_speed_limit_v2.ipynb`, with no scikit-fuzzy dependency.
 
-Uses simple triangular membership functions and the `fuzzy_logic` helpers
-already present in the repo for basic set operations.
+It uses the notebook's own design: three inputs on 0-10 with automf(3)
+triangles (poor / average / good), an output on 0-100 with three triangles,
+the notebook's seven rules, Mamdani min/max inference and centroid
+defuzzification. The defuzzification follows scikit-fuzzy 0.5 step for step
+(cut-level crossing points are added to the universe, then a piecewise-linear
+centroid), so results match `skfuzzy.control` to floating-point precision.
+See test_speed_limit_pure.py.
+
+Like the notebook, some inputs fire no rule at all (for example road 10,
+traffic 0, gap 5). scikit-fuzzy raises KeyError('speed_limit') there;
+this module returns None instead.
 """
 
-import sys
 import numpy as np
-from fuzzy_logic import fuzzy_and, fuzzy_or, fuzzy_not
-from paper_rules import build_mapping_for_labels
+
+UNI_IN = np.arange(0, 11, 1)
+UNI_OUT = np.arange(0, 101, 1)
+LABELS = ('poor', 'average', 'good')
+
+# (operator, (road, traffic, gap), output), exactly as in the notebook
+RULES = [
+    ('or', ('poor', 'good', 'poor'), 'low'),
+    ('and', ('poor', 'average', 'average'), 'low'),
+    ('and', ('average', 'good', 'poor'), 'low'),
+    ('and', ('average', 'average', 'average'), 'medium'),
+    ('and', ('good', 'good', 'poor'), 'medium'),
+    ('and', ('good', 'average', 'average'), 'high'),
+    ('and', ('good', 'poor', 'good'), 'high'),
+]
 
 
 def trimf(x, abc):
+    """Triangular membership function, same as skfuzzy.trimf."""
     a, b, c = abc
-    y = np.zeros_like(x, dtype=float)
-    # rising edge
-    idx = (x >= a) & (x <= b)
-    if b != a:
+    y = np.zeros(len(x))
+    if a != b:
+        idx = (a < x) & (x < b)
         y[idx] = (x[idx] - a) / (b - a)
-    # falling edge
-    idx = (x >= b) & (x <= c)
-    if c != b:
+    if b != c:
+        idx = (b < x) & (x < c)
         y[idx] = (c - x[idx]) / (c - b)
+    y[x == b] = 1.0
     return y
 
 
-def interp_membership(x, mf, value):
-    return np.interp(value, x, mf)
-
-
 def build_speed_mfs():
-    # universes
-    uni_in = np.arange(0, 11, 1)
-    uni_out = np.arange(0, 121, 1)
-
-    # helper: trapezoidal MF like skfuzzy.trapmf
-    def trapmf(x, abcd):
-        a, b, c, d = abcd
-        y = np.zeros_like(x, dtype=float)
-        # rising edge
-        idx = (x >= a) & (x <= b)
-        if b != a:
-            y[idx] = (x[idx] - a) / (b - a)
-        # top
-        idx = (x >= b) & (x <= c)
-        y[idx] = 1.0
-        # falling edge
-        idx = (x >= c) & (x <= d)
-        if d != c:
-            y[idx] = (d - x[idx]) / (d - c)
-        return y
-
-    def gauss(x, mu, sigma):
-        return np.exp(-0.5 * ((x - mu) / sigma) ** 2)
-
-    # Input membership functions (poor, average, good) use trapezoids per report
-    poor = trapmf(uni_in, [0, 0, 2, 3])
-    average = trapmf(uni_in, [2, 4, 6, 8])
-    good = trapmf(uni_in, [5, 8, 10, 10])
-
-    # Gaussian outputs (centers 15,45,90; tuned sigma)
-    low = gauss(uni_out, 15, 10)
-    medium = gauss(uni_out, 45, 12)
-    high = gauss(uni_out, 90, 15)
-
-    mfs = {
-        'uni_in': uni_in,
-        'uni_out': uni_out,
-        'poor': poor,
-        'average': average,
-        'good': good,
-        'low': low,
-        'medium': medium,
-        'high': high,
+    """Membership functions keyed by term name, plus the two universes."""
+    lo, hi = UNI_IN[0], UNI_IN[-1]
+    mid = (lo + hi) / 2
+    return {
+        'uni_in': UNI_IN,
+        'uni_out': UNI_OUT,
+        # automf(3)
+        'poor': trimf(UNI_IN, [lo, lo, mid]),
+        'average': trimf(UNI_IN, [lo, mid, hi]),
+        'good': trimf(UNI_IN, [mid, hi, hi]),
+        # notebook output terms
+        'low': trimf(UNI_OUT, [0, 0, 50]),
+        'medium': trimf(UNI_OUT, [0, 50, 100]),
+        'high': trimf(UNI_OUT, [50, 100, 100]),
     }
-    return mfs
+
+
+def _centroid(x, mfx):
+    """Piecewise-linear centroid, same as skfuzzy.defuzzify.centroid."""
+    sum_moment_area = sum_area = 0.0
+    for i in range(1, len(x)):
+        x1, x2, y1, y2 = x[i - 1], x[i], mfx[i - 1], mfx[i]
+        if (y1 == 0 and y2 == 0) or x1 == x2:
+            continue
+        if y1 == y2:
+            moment, area = 0.5 * (x1 + x2), (x2 - x1) * y1
+        elif y1 == 0:
+            moment, area = 2 / 3 * (x2 - x1) + x1, 0.5 * (x2 - x1) * y2
+        elif y2 == 0:
+            moment, area = 1 / 3 * (x2 - x1) + x1, 0.5 * (x2 - x1) * y1
+        else:
+            moment = (2 / 3 * (x2 - x1) * (y2 + 0.5 * y1)) / (y1 + y2) + x1
+            area = 0.5 * (x2 - x1) * (y1 + y2)
+        sum_moment_area += moment * area
+        sum_area += area
+    return sum_moment_area / sum_area
+
+
+def _crossings(x, mf, cut):
+    """x positions where a term's membership crosses its cut level."""
+    d = mf - cut
+    i = np.nonzero(d[:-1] * d[1:] < 0)[0]
+    return x[i] + (x[i + 1] - x[i]) * d[i] / (d[i] - d[i + 1])
+
+
+def compute(mfs, rc_val, td_val, gap_val):
+    """Run the rule base.
+
+    Returns (speed or None, x, aggregated_mf, rules), where rules is a list of
+    (description, activation, clipped_mf_on_x) sorted by activation.
+    """
+    ui = mfs['uni_in']
+    fuzz = [{t: float(np.interp(v, ui, mfs[t])) for t in LABELS} for v in (rc_val, td_val, gap_val)]
+
+    cut = {'low': 0.0, 'medium': 0.0, 'high': 0.0}
+    activations = []
+    for op, terms, out in RULES:
+        vals = [fuzz[i][t] for i, t in enumerate(terms)]
+        act = max(vals) if op == 'or' else min(vals)
+        activations.append(act)
+        cut[out] = max(cut[out], act)
+
+    # scikit-fuzzy evaluates the output on the universe plus each cut crossing
+    uo = mfs['uni_out']
+    x = np.unique(np.concatenate([uo] + [_crossings(uo, mfs[k], c) for k, c in cut.items() if 0 < c < 1]))
+
+    rules, agg = [], np.zeros(len(x))
+    for (op, terms, out), act in zip(RULES, activations):
+        clipped = np.fmin(act, np.interp(x, uo, mfs[out]))
+        agg = np.fmax(agg, clipped)
+        joiner = ' OR ' if op == 'or' else ' AND '
+        desc = 'road ' + terms[0] + joiner + 'traffic ' + terms[1] + joiner + 'gap ' + terms[2] + ' -> ' + out
+        rules.append((desc, act, clipped))
+    rules.sort(key=lambda r: r[1], reverse=True)
+
+    speed = _centroid(x, agg) if agg.any() else None
+    return speed, x, agg, rules
 
 
 def apply_rules(mfs, rc_val, td_val, gap_val):
-    ui = mfs['uni_in']
-    uo = mfs['uni_out']
+    """Recommended speed limit, or None when no rule fires."""
+    return compute(mfs, rc_val, td_val, gap_val)[0]
 
-    # fuzzify inputs
-    rc = np.array([interp_membership(ui, mfs['poor'], rc_val), interp_membership(ui, mfs['average'], rc_val), interp_membership(ui, mfs['good'], rc_val)])
-    td = np.array([interp_membership(ui, mfs['poor'], td_val), interp_membership(ui, mfs['average'], td_val), interp_membership(ui, mfs['good'], td_val)])
-    gap = np.array([interp_membership(ui, mfs['poor'], gap_val), interp_membership(ui, mfs['average'], gap_val), interp_membership(ui, mfs['good'], gap_val)])
 
-    # Programmatic rule aggregation mirroring CLI heuristic
-    # provide an explicit rule table (exhaustive 3x3x3 = 27 combinations)
-    # Keys: (road, traffic, gap) values are one of 'low','medium','high'
-    # This explicit mapping is easier to review and mirrors the heuristic used before.
-    # use the inferred 36-rule mapping module to build an explicit mapping
-    labels = ['poor', 'average', 'good']
-    mapping = build_mapping_for_labels(labels)
-
-    low_act = 0.0
-    medium_act = 0.0
-    high_act = 0.0
-    labels = ['poor', 'average', 'good']
-    for i, rlab in enumerate(labels):
-        for j, tlab in enumerate(labels):
-            for k, glab in enumerate(labels):
-                r_val = rc[i]
-                t_val = td[j]
-                g_val = gap[k]
-                activation = min(r_val, t_val, g_val)
-                out_label = mapping[(rlab, tlab, glab)]
-                if out_label == 'low':
-                    low_act = max(low_act, activation)
-                elif out_label == 'medium':
-                    medium_act = max(medium_act, activation)
-                else:
-                    high_act = max(high_act, activation)
-
-    # apply clipping to output MFs
-    low_clip = np.fmin(low_act, mfs['low'])
-    medium_clip = np.fmin(medium_act, mfs['medium'])
-    high_clip = np.fmin(high_act, mfs['high'])
-
-    # aggregate final mf
-    agg = np.fmax(low_clip, np.fmax(medium_clip, high_clip))
-
-    # defuzzify using centroid
-    if agg.sum() == 0:
-        centroid = 0.0
-    else:
-        centroid = (agg * mfs['uni_out']).sum() / agg.sum()
-
-    return centroid
+def human_readable_rules():
+    """The seven notebook rules as sentences (for documentation/UI)."""
+    out = []
+    for i, (op, terms, result) in enumerate(RULES, start=1):
+        j = ' OR ' if op == 'or' else ' AND '
+        out.append(f'{i}. IF road is {terms[0]}{j}traffic is {terms[1]}{j}gap is {terms[2]} THEN speed is {result}')
+    return out
 
 
 def main():
     mfs = build_speed_mfs()
-    print('Pure-Python fuzzy speed limit tester (no scikit-fuzzy).')
-    try:
-        rc = float(input('Enter road conditions (0-10): '))
-        td = float(input('Enter traffic density (0-10): '))
-        gap = float(input('Enter gap in traffic (0-10): '))
-        if not (0 <= rc <= 10 and 0 <= td <= 10 and 0 <= gap <= 10):
-            print('Inputs must be between 0 and 10')
-            return
-        out = apply_rules(mfs, rc, td, gap)
-        print(f'Recommended speed limit: {out:.2f}')
-    except Exception as e:
-        print('Error:', e)
+    print('Fuzzy speed limit (notebook rules, no scikit-fuzzy). Ctrl+C to quit.')
+    while True:
+        try:
+            rc = float(input('Enter road conditions (0-10): '))
+            td = float(input('Enter traffic density (0-10): '))
+            gap = float(input('Enter gap in traffic (0-10): '))
+            if not (0 <= rc <= 10 and 0 <= td <= 10 and 0 <= gap <= 10):
+                print('Inputs must be between 0 and 10')
+                continue
+            out = apply_rules(mfs, rc, td, gap)
+            print('No rule fires for these inputs.' if out is None else f'Recommended speed limit: {out:.2f}')
+        except ValueError:
+            print('Please enter a number.')
+        except (KeyboardInterrupt, EOFError):
+            print()
+            break
 
 
 if __name__ == '__main__':
